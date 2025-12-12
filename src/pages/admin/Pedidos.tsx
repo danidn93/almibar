@@ -15,6 +15,7 @@ type EstadoPedido = 'pendiente' | 'preparando' | 'listo' | 'cancelado' | 'liquid
 interface Pedido {
   id: string;
   mesa_id: string;
+  sucursal_id: string;
   tipo: 'productos' | 'canciones' | 'mixto';
   estado: EstadoPedido;
   total: number;
@@ -23,17 +24,17 @@ interface Pedido {
   pedido_items: {
     cantidad: number;
     nota?: string | null;
-    items: {
+    productos_local: {
       nombre: string;
       tipo: 'producto' | 'cancion';
-      precio?: number | null;
-      artista?: string | null;
+      precio: number;
+      descripcion?: string | null;
     };
   }[];
 }
 
-const fmtCOP = (n: number) =>
-  new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 }).format(n);
+const fmt = (n: number) =>
+  new Intl.NumberFormat('es-EC', { style: 'currency', currency: 'USD', minimumFractionDigits: 2 }).format(n);
 
 const AdminPedidos = () => {
   const [pedidos, setPedidos] = useState<Pedido[]>([]);
@@ -43,19 +44,20 @@ const AdminPedidos = () => {
     fetchPedidos();
 
     const channel = supabase
-      .channel('pedidos-changes')
+      .channel('pedidos-realtime')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'pedidos' }, fetchPedidos)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'pedido_items' }, fetchPedidos)
       .subscribe();
 
-    return () => { supabase.removeChannel(channel); };
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   const fetchPedidos = async () => {
     try {
       setIsLoading(true);
 
-      // Solo mostrar pendientes y preparando (excluye listo/cancelado/liquidado)
       const { data, error } = await supabase
         .from('pedidos')
         .select(`
@@ -64,28 +66,33 @@ const AdminPedidos = () => {
           pedido_items(
             cantidad,
             nota,
-            items(nombre, tipo, precio, artista)
+            productos_local(
+              nombre,
+              tipo,
+              precio,
+              descripcion
+            )
           )
         `)
         .in('estado', ['pendiente', 'preparando'])
         .order('created_at', { ascending: false });
 
       if (error) throw error;
+
       setPedidos((data as Pedido[]) || []);
-    } catch (error) {
-      console.error('Error fetching pedidos:', error);
-      toast({ title: "Error", description: "No se pudieron cargar los pedidos", variant: "destructive" });
+    } catch (e) {
+      console.error('Error fetching pedidos:', e);
+      toast({ title: 'Error', description: 'No se pudieron cargar los pedidos', variant: 'destructive' });
     } finally {
       setIsLoading(false);
     }
   };
 
-  // Flujo: pendiente -> preparando -> listo
-  const getNextEstado = (e: EstadoPedido): EstadoPedido | undefined => {
-    switch (e) {
-      case 'pendiente':   return 'preparando';
-      case 'preparando':  return 'listo';
-      default:            return undefined;
+  const getNextEstado = (estado: EstadoPedido) => {
+    switch (estado) {
+      case 'pendiente': return 'preparando';
+      case 'preparando': return 'listo';
+      default: return undefined;
     }
   };
 
@@ -94,11 +101,15 @@ const AdminPedidos = () => {
     try {
       const { error } = await supabase.from('pedidos').update({ estado: next }).eq('id', pedidoId);
       if (error) throw error;
-      await fetchPedidos();
-      toast({ title: "Estado actualizado", description: `Ahora está ${next}.` });
+
+      fetchPedidos();
+      toast({ title: 'Estado actualizado', description: `Ahora está ${next}.` });
     } catch (e: any) {
-      console.error('[updateEstado] error', e);
-      toast({ title: "Error", description: e?.message || "No se pudo actualizar el estado", variant: "destructive" });
+      toast({
+        title: 'Error',
+        description: e?.message || 'No se pudo actualizar el estado',
+        variant: 'destructive',
+      });
     }
   };
 
@@ -135,15 +146,15 @@ const AdminPedidos = () => {
               <CardContent className="pt-6">
                 <div className="text-center text-muted-foreground">
                   <Clock className="mx-auto h-12 w-12 mb-4" />
-                  <p>No hay pedidos activos en este momento</p>
+                  <p>No hay pedidos activos</p>
                 </div>
               </CardContent>
             </Card>
           ) : (
             <div className="grid gap-4">
               {pedidos.map((pedido) => (
-                <Card key={pedido.id} className="overflow-hidden">
-                  <CardHeader className="pb-4">
+                <Card key={pedido.id}>
+                  <CardHeader>
                     <div className="flex justify-between items-start">
                       <div>
                         <CardTitle className="flex items-center gap-2">
@@ -152,15 +163,15 @@ const AdminPedidos = () => {
                           ) : pedido.tipo === 'canciones' ? (
                             <Music className="h-5 w-5" />
                           ) : (
-                            <div className="flex items-center gap-1">
+                            <>
                               <Package className="h-5 w-5" />
                               <Music className="h-5 w-5" />
-                            </div>
+                            </>
                           )}
                           {pedido.mesas.nombre}
                         </CardTitle>
                         <CardDescription>
-                          {new Date(pedido.created_at).toLocaleString()} • Total: {fmtCOP(Number(pedido.total || 0))}
+                          {new Date(pedido.created_at).toLocaleString()} • Total: {fmt(Number(pedido.total))}
                         </CardDescription>
                       </div>
 
@@ -183,7 +194,7 @@ const AdminPedidos = () => {
                           return (
                             <Button size="sm" onClick={() => updateEstado(pedido.id, next)}>
                               <CheckCircle className="mr-2 h-4 w-4" />
-                              {`Marcar como ${next}`}
+                              {`Marcar ${next}`}
                             </Button>
                           );
                         })()}
@@ -197,28 +208,33 @@ const AdminPedidos = () => {
                         <TableRow>
                           <TableHead>Item</TableHead>
                           <TableHead>Cantidad</TableHead>
-                          <TableHead>Precio Unit.</TableHead>
+                          <TableHead>Precio</TableHead>
                           <TableHead>Subtotal</TableHead>
                           <TableHead>Nota</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {pedido.pedido_items.map((pi, index) => {
-                          const unit = Number(pi.items.precio || 0);
-                          const sub = unit * Number(pi.cantidad || 0);
+                        {pedido.pedido_items.map((pi, idx) => {
+                          const unit = pi.productos_local.precio;
+                          const sub = unit * pi.cantidad;
+
                           return (
-                            <TableRow key={index}>
+                            <TableRow key={idx}>
                               <TableCell>
-                                <div className="font-medium">{pi.items.nombre}</div>
-                                {pi.items.artista && (
-                                  <div className="text-sm text-muted-foreground">por {pi.items.artista}</div>
+                                <div className="font-medium">{pi.productos_local.nombre}</div>
+                                {pi.productos_local.tipo === 'cancion' && (
+                                  <div className="text-sm text-muted-foreground">Canción</div>
                                 )}
                               </TableCell>
                               <TableCell>{pi.cantidad}</TableCell>
-                              <TableCell>{unit > 0 ? fmtCOP(unit) : 'Gratis'}</TableCell>
-                              <TableCell>{unit > 0 ? fmtCOP(sub) : 'Gratis'}</TableCell>
+                              <TableCell>{fmt(unit)}</TableCell>
+                              <TableCell>{fmt(sub)}</TableCell>
                               <TableCell>
-                                {pi.nota ? <Badge variant="outline" className="text-xs">{pi.nota}</Badge> : '—'}
+                                {pi.nota ? (
+                                  <Badge variant="outline" className="text-xs">{pi.nota}</Badge>
+                                ) : (
+                                  '—'
+                                )}
                               </TableCell>
                             </TableRow>
                           );

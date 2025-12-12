@@ -1,203 +1,388 @@
 // src/layouts/AdminLayout.tsx
-import { Outlet, Navigate, Link } from 'react-router-dom';
-import { useAuth } from '@/contexts/AuthContext';
-import NewOrderListener from '@/components/NewOrderListener';
-import { Button } from '@/components/ui/button';
-import { Bell, Clock, LogOut } from 'lucide-react';
-import adminBg from '/assets/admin-bg.png';
-import { useEffect, useState, useCallback } from 'react';
-import { supabase } from '@/integrations/supabase/client';
-import { Switch } from '@/components/ui/switch';
-import { Badge } from '@/components/ui/badge';
-import { toast } from '@/hooks/use-toast';
+import { Outlet, Navigate, useNavigate } from "react-router-dom";
+import { useAuth } from "@/contexts/AuthContext";
+import { Button } from "@/components/ui/button";
+import { Bell, Clock, LogOut, User, Settings } from "lucide-react";
+import { useEffect, useState, useCallback } from "react";
+import { supabase } from "@/integrations/supabase/client";
+import { toast } from "@/hooks/use-toast";
 
+import {
+  Dialog,
+  DialogTrigger,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuLabel
+} from "@/components/ui/dropdown-menu";
 
 type Config = {
   id: string;
   abierto: boolean;
-  nombre_local?: string | null;
   logo_url?: string | null;
+  hero_bg_url?: string | null;
 };
 
 export default function AdminLayout() {
-  const { isAdmin, logout } = useAuth();
+  const { user, isAdmin, logout } = useAuth();
+  const navigate = useNavigate();
 
-  const [now, setNow] = useState<string>(() =>
-    new Date().toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
-  );
+  const [now, setNow] = useState("");
   const [pendingCount, setPendingCount] = useState(0);
 
-  // Config
+  const [sucursales, setSucursales] = useState<any[]>([]);
+  const [selectedSucursal, setSelectedSucursal] = useState<string | null>(null);
+
   const [conf, setConf] = useState<Config | null>(null);
-  const [savingOpen, setSavingOpen] = useState(false);
 
-  const refreshPendingCount = useCallback(async () => {
-    const { count, error } = await supabase
-      .from('pedidos')
-      .select('id', { count: 'exact', head: true })
-      .eq('estado', 'pendiente');
-    if (!error) setPendingCount(count ?? 0);
-  }, []);
+  // Perfil
+  const [openProfile, setOpenProfile] = useState(false);
+  const [openPass, setOpenPass] = useState(false);
 
-  // Cargar config (single row)
-  const fetchConfig = useCallback(async () => {
-    const { data, error } = await supabase
-      .from('configuracion')
-      .select('*')
-      .order('updated_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (!error && data) setConf(data as Config);
-  }, []);
+  const [profileName, setProfileName] = useState(user?.name ?? "");
+  const [profileUsername, setProfileUsername] = useState(user?.username ?? "");
+  const [savingProfile, setSavingProfile] = useState(false);
 
-  
-  const toggleAbierto = async (val: boolean) => {
-    if (savingOpen) return;
-    setSavingOpen(true);
+  const [newPass, setNewPass] = useState("");
+  const [savingPass, setSavingPass] = useState(false);
 
-    // optimista: refleja el cambio al vuelo
-    const prev = conf;
-    if (conf) setConf({ ...conf, abierto: val });
-
-    try {
-      let id = conf?.id;
-      if (!id) {
-        const ins = await supabase
-          .from('configuracion')
-          .insert([{ abierto: val }])
-          .select()
-          .single();
-
-        if (ins.error) throw ins.error;
-        id = ins.data.id as string;
-        setConf(ins.data as any);
-        toast({ title: 'Listo', description: `Local ${val ? 'abierto' : 'cerrado'}.` });
-      } else {
-        const { error } = await supabase
-          .from('configuracion')
-          .update({ abierto: val })
-          .eq('id', id);
-
-        if (error) throw error;
-        toast({ title: 'Listo', description: `Local ${val ? 'abierto' : 'cerrado'}.` });
-      }
-    } catch (e: any) {
-      console.error('[toggleAbierto]', e);
-      // rollback en caso de error
-      if (prev) setConf(prev);
-      toast({
-        title: 'No se pudo actualizar',
-        description: e?.message || 'Revisa las políticas RLS de la tabla configuracion.',
-        variant: 'destructive',
-      });
-    } finally {
-      setSavingOpen(false);
-    }
-  };
-
-
-  // Reloj
+  // ================================
+  //  CLOCK
+  // ================================
   useEffect(() => {
+    setNow(new Date().toLocaleString());
     const id = setInterval(() => {
-      setNow(new Date().toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }));
+      setNow(new Date().toLocaleString());
     }, 1000);
+
     return () => clearInterval(id);
   }, []);
 
-  // Inicializaciones
+  // ================================
+  //  LOAD SUCURSALES
+  // ================================
   useEffect(() => {
-    refreshPendingCount();
-    fetchConfig();
+    if (!user?.local_id) return;
 
-    const ch1 = supabase
-      .channel('badge-pedidos')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'pedidos' }, refreshPendingCount)
-      .subscribe();
+    const load = async () => {
+      const { data } = await supabase
+        .from("sucursales")
+        .select("id,nombre")
+        .eq("local_id", user.local_id);
 
-    const ch2 = supabase
-      .channel('config-realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'configuracion' }, fetchConfig)
-      .subscribe();
+      if (data) {
+        setSucursales(data);
+        if (data.length === 1) setSelectedSucursal(data[0].id);
+      }
+    };
+
+    load();
+  }, [user?.local_id]);
+
+  // ================================
+  //  LOAD CONFIGURACIÓN
+  // ================================
+  useEffect(() => {
+    if (!selectedSucursal) return;
+
+    const loadConf = () => {
+      supabase
+        .from("configuracion")
+        .select("*")
+        .eq("sucursal_id", selectedSucursal)
+        .maybeSingle()
+        .then(({ data }) => {
+          if (data) setConf(data);
+        });
+    };
+
+    loadConf();
+
+    const channel = supabase
+      .channel(`config-${selectedSucursal}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "configuracion" },
+        loadConf
+      );
+
+    channel.subscribe();
 
     return () => {
-      supabase.removeChannel(ch1);
-      supabase.removeChannel(ch2);
+      supabase.removeChannel(channel);
     };
-  }, [refreshPendingCount, fetchConfig]);
+  }, [selectedSucursal]);
+
+  // ================================
+  //  PENDING COUNT
+  // ================================
+  const refreshPendingCount = useCallback(() => {
+    if (!selectedSucursal) return;
+
+    supabase
+      .from("pedidos")
+      .select("id", { count: "exact", head: true })
+      .eq("sucursal_id", selectedSucursal)
+      .eq("estado", "pendiente")
+      .then(({ count }) => {
+        setPendingCount(count ?? 0);
+      });
+  }, [selectedSucursal]);
+
+  useEffect(() => {
+    if (!selectedSucursal) return;
+
+    refreshPendingCount();
+
+    const channel = supabase
+      .channel(`pending-${selectedSucursal}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "pedidos" },
+        refreshPendingCount
+      );
+
+    channel.subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+
+  }, [selectedSucursal, refreshPendingCount]);
 
   if (!isAdmin) return <Navigate to="/admin/login" replace />;
 
+  // ================================
+  //  GUARDAR PERFIL
+  // ================================
+  const saveProfile = async () => {
+    setSavingProfile(true);
+    try {
+      const { error } = await supabase
+        .from("app_users")
+        .update({
+          username: profileUsername.trim(),
+          name: profileName.trim()
+        })
+        .eq("id", user?.id);
+
+      if (error) throw error;
+
+      toast({ title: "Perfil actualizado correctamente." });
+      setOpenProfile(false);
+    } catch (e: any) {
+      toast({ title: "Error", description: e.message, variant: "destructive" });
+    } finally {
+      setSavingProfile(false);
+    }
+  };
+
+  // ================================
+  //  CAMBIAR CONTRASEÑA
+  // ================================
+  const savePassword = async () => {
+    if (newPass.length < 4) {
+      toast({ title: "Contraseña inválida", description: "Debe tener al menos 4 caracteres." });
+      return;
+    }
+
+    setSavingPass(true);
+    try {
+      const { error } = await supabase.rpc("admin_update_user_password", {
+        p_id: user?.id,
+        p_password: newPass
+      });
+
+      if (error) throw error;
+
+      toast({ title: "Contraseña actualizada correctamente." });
+      setOpenPass(false);
+    } catch (e: any) {
+      toast({ title: "Error", description: e.message, variant: "destructive" });
+    } finally {
+      setSavingPass(false);
+    }
+  };
+
   return (
     <>
-      <NewOrderListener />
       {/* Fondo */}
       <div className="fixed inset-0 -z-10">
         <div
-          className="h-full w-full bg-no-repeat bg-center bg-cover bg-fixed"
-          style={{ backgroundImage: `url(${adminBg})` }}
+          className="h-full w-full bg-cover bg-center"
+          style={{ backgroundImage: `url(${conf?.hero_bg_url || "/assets/admin-bg.png"})` }}
         />
       </div>
 
       <div className="min-h-screen">
-        <header className="sticky top-0 z-20">
-          <div className="mx-auto max-w-6xl px-4 py-3 flex justify-between items-center">
+        <header className="sticky top-0 bg-black/40 backdrop-blur-lg">
+          <div className="max-w-6xl mx-auto py-3 px-4 flex justify-between items-center">
+
+            {/* Logo + sucursal */}
             <div className="flex items-center gap-3">
               <img
-                src={conf?.logo_url || '/assets/logo-admin.png'}
-                alt="Logo"
-                className="h-12 w-12 sm:h-16 sm:w-16 rounded-sm select-none object-contain"
-                draggable={false}
+                src={conf?.logo_url || "/assets/logo-admin.png"}
+                className="h-14 w-14 object-contain"
               />
               <div>
-                <h1 className="text-2xl font-bold text-white">
-                  {conf?.nombre_local || 'Panel Administrativo'}
-                </h1>
-                <div className="flex items-center gap-2">
-                  <span className="text-white/90 text-sm">Local</span>
-                  <Switch checked={!!conf?.abierto} onCheckedChange={toggleAbierto} disabled={savingOpen || !conf}/>
-                  <Badge variant={conf?.abierto ? 'default' : 'secondary'}>
-                    {conf?.abierto ? 'Abierto' : 'Cerrado'}
-                  </Badge>
-                </div>
+                <h1 className="text-2xl font-bold text-white">Panel Administrativo</h1>
+
+                {sucursales.length > 1 ? (
+                  <select
+                    className="mt-1 px-2 py-1 text-black rounded"
+                    value={selectedSucursal ?? ""}
+                    onChange={(e) => setSelectedSucursal(e.target.value)}
+                  >
+                    <option value="" disabled>Seleccione sucursal</option>
+                    {sucursales.map((s) => (
+                      <option key={s.id} value={s.id}>{s.nombre}</option>
+                    ))}
+                  </select>
+                ) : sucursales.length === 1 ? (
+                  <span className="text-white/80 text-sm">{sucursales[0].nombre}</span>
+                ) : null}
               </div>
             </div>
 
-            <div className="flex items-center gap-3">
-              <Link to="/admin/configuracion">
-                <Button variant="outline" className="bg-white/80 backdrop-blur">Configuración</Button>
-              </Link>
+            {/* Controles */}
+            <div className="flex items-center gap-4">
 
-              <button
-                type="button"
-                className="relative inline-flex items-center justify-center rounded-full border bg-white/80 backdrop-blur px-3 py-2 text-sm hover:bg-white"
-                title="Notificaciones"
-                aria-label={`Notificaciones: ${pendingCount} pedidos pendientes`}
+              {/* Configuración */}
+              <Button
+                variant="outline"
+                className="bg-white/20 text-white"
+                onClick={() => navigate("/admin/configuracion")}
               >
-                <Bell className="h-5 w-5" />
+                <Settings className="h-5 w-5" />
+              </Button>
+
+              {/* Notificaciones */}
+              <div className="relative">
+                <Bell className="h-6 w-6 text-white" />
                 {pendingCount > 0 && (
-                  <span className="absolute -top-1 -right-1 inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-red-600 text-white text-[10px] px-1">
+                  <span className="absolute -top-2 -right-2 bg-red-600 text-white px-2 rounded-full text-xs">
                     {pendingCount}
                   </span>
                 )}
-              </button>
-
-              <div className="hidden sm:flex items-center gap-2 rounded-full border bg-white/80 backdrop-blur px-3 py-2 text-sm">
-                <Clock className="h-4 w-4" />
-                <span className="tabular-nums">{now}</span>
               </div>
 
-              <Button onClick={logout} variant="outline" className="bg-white/80 backdrop-blur">
-                <LogOut className="mr-2 h-4 w-4" />
-                Cerrar Sesión
-              </Button>
+              {/* Reloj */}
+              <div className="hidden sm:flex items-center text-white gap-2">
+                <Clock className="h-4 w-4" />
+                {now}
+              </div>
+
+              {/* Usuario */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button className="flex items-center gap-2 text-white">
+                    <User className="h-5 w-5" />
+                    <span>{user?.name ?? user?.username}</span>
+                  </button>
+                </DropdownMenuTrigger>
+
+                <DropdownMenuContent align="end">
+                  <DropdownMenuLabel>Mi cuenta</DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+
+                  <DropdownMenuItem onClick={() => setOpenProfile(true)}>
+                    Editar perfil
+                  </DropdownMenuItem>
+
+                  <DropdownMenuItem onClick={() => setOpenPass(true)}>
+                    Cambiar contraseña
+                  </DropdownMenuItem>
+
+                  <DropdownMenuSeparator />
+
+                  <DropdownMenuItem onClick={logout}>
+                    <LogOut className="h-4 w-4 mr-2" />
+                    Salir
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
           </div>
         </header>
 
-        <main className="mx-auto max-w-6xl px-4 py-6">
-          <Outlet />
-        </main>
+        {/* Contenido */}
+        {selectedSucursal ? (
+          <main className="max-w-6xl mx-auto py-6 px-4">
+            <Outlet context={{ sucursalId: selectedSucursal, conf }} />
+          </main>
+        ) : (
+          <div className="text-center text-white py-10">
+            Seleccione una sucursal para continuar
+          </div>
+        )}
       </div>
+
+      {/* MODAL EDITAR PERFIL */}
+      <Dialog open={openProfile} onOpenChange={setOpenProfile}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Editar perfil</DialogTitle>
+          </DialogHeader>
+
+          <div className="grid gap-4 mt-4">
+            <div>
+              <label>Nombre</label>
+              <Input value={profileName} onChange={(e) => setProfileName(e.target.value)} />
+            </div>
+
+            <div>
+              <label>Usuario</label>
+              <Input
+                value={profileUsername}
+                onChange={(e) => setProfileUsername(e.target.value.replace(/\s/g, ""))}
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button onClick={saveProfile} disabled={savingProfile}>
+              {savingProfile ? "Guardando…" : "Guardar cambios"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* MODAL CAMBIAR CONTRASEÑA */}
+      <Dialog open={openPass} onOpenChange={setOpenPass}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Cambiar contraseña</DialogTitle>
+          </DialogHeader>
+
+          <div className="mt-4">
+            <label>Nueva contraseña</label>
+            <Input
+              type="password"
+              value={newPass}
+              onChange={(e) => setNewPass(e.target.value)}
+            />
+          </div>
+
+          <DialogFooter>
+            <Button
+              onClick={savePassword}
+              disabled={savingPass || newPass.length < 4}
+            >
+              {savingPass ? "Guardando…" : "Actualizar contraseña"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
