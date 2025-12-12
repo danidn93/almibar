@@ -264,7 +264,7 @@ const LocationSection = () => {
                   <div className="flex items-center gap-3">
                     <Phone className="w-5 h-5 text-primary" />
                     <div>
-                      <p className="text-foreground font-medium">+{telefono}</p>
+                      <p className="text-foreground font-medium">{telefono}</p>
                       <p className="text-sm text-muted-foreground">Teléfono</p>
                     </div>
                   </div>
